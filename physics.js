@@ -88,7 +88,7 @@ export const ARENAS = [
   {
     id: 1,
     name: 'First Grid',
-    hint: 'Open grid, one slow rival. Learn the turn, then cut it off.',
+    hint: 'Open grid, one slow rival. A/D or ←/→ turns, Space boosts. Learn the turn, then cut it off.',
     accent: '#22e6ff',
     accentName: 'cyan',
     par: 75,

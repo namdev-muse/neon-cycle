@@ -607,12 +607,19 @@ function hideToast() {
 // every step would queue the same turn twice.
 let turnEdge = 0;
 let boostEdge = false;
+// Turns/boost may be queued while PAUSED: the frame loop only
+// consumes edges while playing, so a press during pause survives
+// until the first sim step after resume. (Live playtest NO-GO fix
+// 2026-11-25: queueTurn silently dropped presses while paused —
+// the tester paused to plan, pressed a turn, resumed, and rode
+// straight into the wall. Single presses while playing always
+// worked; the pause was the hole.)
 function queueTurn(dir) {
-  if (state.phase !== 'playing') return;
+  if (state.phase !== 'playing' && state.phase !== 'paused') return;
   turnEdge = dir;
 }
 function queueBoostToggle() {
-  if (state.phase !== 'playing') return;
+  if (state.phase !== 'playing' && state.phase !== 'paused') return;
   boostEdge = true;
 }
 window.addEventListener('keydown', (e) => {
