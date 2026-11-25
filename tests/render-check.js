@@ -278,6 +278,28 @@ try {
   });
   console.log(`render-check: ArrowLeft turns the rider left on screen vs the arena centre (offset ${relX0.toFixed(0)} -> ${relX1.toFixed(0)})`);
 
+  // A turn queued while PAUSED must survive to resume (live playtest
+  // NO-GO fix 2026-11-25: the tester paused to plan, pressed a turn,
+  // resumed, and rode straight into the wall — queueTurn silently
+  // dropped the press because the phase was 'paused'). Restart first
+  // so the rider has a long runway; pause; press ArrowRight; resume;
+  // the rider must turn.
+  await page.keyboard.press('KeyR');
+  await page.waitForTimeout(500);
+  await page.keyboard.press('KeyP');
+  await page.waitForFunction(() => window.__cycle.phase === 'paused', null, { timeout: 5000 });
+  const turnsPaused = await page.evaluate(() => window.__cycle.info().turns);
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('KeyP');
+  await page.waitForFunction(() => window.__cycle.phase === 'playing', null, { timeout: 5000 });
+  try {
+    await page.waitForFunction((t0) => window.__cycle.info().turns > t0, turnsPaused, { timeout: 10000 });
+  } catch {
+    throw new Error('a turn queued while paused must fire after resume');
+  }
+  console.log('render-check: turn queued while paused fires after resume');
+
   // Boost is a TOGGLE, never a hold: one Space press switches it on
   // (speed rises, meter drains), a second press switches it off.
   // Restart first so the rider has a long runway ahead.
