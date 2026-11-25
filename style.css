@@ -225,6 +225,7 @@ h3 { color: var(--gold); margin: 14px 0 6px; letter-spacing: 0.08em; }
 }
 .touch-btn:active { transform: scale(0.94); }
 .touch-btn.held { background: var(--gold); border-color: var(--gold); }
+.touch-btn.flash { background: var(--cyan); border-color: var(--cyan); color: var(--ink); box-shadow: 0 0 22px rgba(34, 230, 255, 0.7); transform: scale(1.08); }
 
 /* ---------- settings rows ---------- */
 .perf-line { color: var(--muted); font-size: 0.9rem; margin: 12px 0 4px; }

@@ -49,6 +49,8 @@ const state = {
   lastTrapAnnounced: null,
   lastDenied: null, // sticky copy of the last denied reason (for the render check + HUD cue)
   lastDeniedToast: 0, // performance.now() of the last denied toast — throttles repeat toasts
+  lastKey: null, // diagnostics: last keydown seen {code, key, repeat, phase} (round-4 input probe)
+  lastTurnOutcome: null, // diagnostics: last queueTurn result 'queued' | 'dropped:<phase>' | 'dropped:queue-full'
   musicActive: false,
   toastT: 0,
   muted: save.settings.muted,
@@ -620,15 +622,31 @@ function hideToast() {
 // every game-side silent-drop path.)
 const turnPending = [];
 let boostEdge = false;
+function flashTurnButton(dir) {
+  const el = $(dir < 0 ? 'btn-turn-left' : 'btn-turn-right');
+  if (!el) return;
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 180);
+}
 function queueTurn(dir) {
-  if (state.phase !== 'playing' && state.phase !== 'paused') return;
-  if (turnPending.length < 4) turnPending.push(dir);
+  if (state.phase !== 'playing' && state.phase !== 'paused') {
+    state.lastTurnOutcome = `dropped:${state.phase}`;
+    return;
+  }
+  if (turnPending.length < 4) {
+    turnPending.push(dir);
+    state.lastTurnOutcome = 'queued';
+    flashTurnButton(dir);
+  } else {
+    state.lastTurnOutcome = 'dropped:queue-full';
+  }
 }
 function queueBoostToggle() {
   if (state.phase !== 'playing' && state.phase !== 'paused') return;
   boostEdge = true;
 }
 window.addEventListener('keydown', (e) => {
+  state.lastKey = { code: e.code || '', key: e.key || '', repeat: !!e.repeat, phase: state.phase };
   if (e.repeat) return;
   ensureAudio();
   switch (e.code) {
@@ -648,7 +666,17 @@ window.addEventListener('keydown', (e) => {
 function bindTouchButton(id, down) {
   const el = $(id);
   if (!el) return;
-  el.addEventListener('pointerdown', (e) => { e.preventDefault(); ensureAudio(); down(); });
+  let lastFire = 0;
+  const fire = (e) => {
+    const now = performance.now();
+    if (now - lastFire < 300) return; // pointerdown + click would double-queue
+    lastFire = now;
+    e.preventDefault();
+    ensureAudio();
+    down();
+  };
+  el.addEventListener('pointerdown', fire);
+  el.addEventListener('click', fire);
 }
 bindTouchButton('btn-turn-left', () => queueTurn(-1));
 bindTouchButton('btn-turn-right', () => queueTurn(1));
@@ -788,7 +816,10 @@ function startArena(id, unlockedOverride = false) {
   state.readyT = 1.2; // ready beat: rider holds still, hint toast up, input queues
   showOnly(null);
   $('hud').classList.remove('hidden');
-  if (isTouch()) $('touch-controls').classList.remove('hidden');
+  // On-screen turn/boost buttons are ALWAYS visible during play
+  // (round-4 change, 2026-11-25): the game is mouse-playable, and
+  // click-driven playtests can steer even when key delivery fails.
+  $('touch-controls').classList.remove('hidden');
   hideToast();
   const best = save.best[id];
   $('hud-best').textContent = best ? `Best ${best.score}` : 'Best —';
@@ -1112,9 +1143,13 @@ function frame(now) {
       if (state.toastT <= 0) hideToast();
     }
   }
-  // Settings performance readout.
+  // Settings performance readout (+ input diagnostics, round 4).
   if (!$('settings').classList.contains('hidden')) {
-    $('perf-line').textContent = `Performance: ${Math.round(fpsEma)} fps · render scale ${renderer.getPixelRatio().toFixed(1)}×`;
+    const lk = state.lastKey;
+    const inputLine = lk
+      ? ` · Input: last key ${lk.code || lk.key || '?'}${lk.repeat ? ' (repeat)' : ''} · turn ${state.lastTurnOutcome || '—'} · queued ${turnPending.length}`
+      : ' · Input: no key seen yet';
+    $('perf-line').textContent = `Performance: ${Math.round(fpsEma)} fps · render scale ${renderer.getPixelRatio().toFixed(1)}×${inputLine}`;
   }
 
   // Scene: trails + cycles + boost cells + camera.
@@ -1223,6 +1258,10 @@ function info() {
     rivalsAlive: run ? run.rivals.filter((r) => r.alive).length : 0,
     rivalsTotal: run ? run.rivals.length : 0,
     turns: state.turnCount,
+    lastKey: state.lastKey,
+    lastTurnOutcome: state.lastTurnOutcome,
+    turnQueued: turnPending.length,
+    touchVisible: !$('touch-controls').classList.contains('hidden'),
     lastDenied: state.lastDenied,
     lastTrap: state.lastTrapAnnounced,
     runPhase: run ? run.phase : null,
