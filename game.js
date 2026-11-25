@@ -51,6 +51,7 @@ const state = {
   lastDeniedToast: 0, // performance.now() of the last denied toast — throttles repeat toasts
   lastKey: null, // diagnostics: last keydown seen {code, key, repeat, phase} (round-4 input probe)
   lastTurnOutcome: null, // diagnostics: last queueTurn result 'queued' | 'dropped:<phase>' | 'dropped:queue-full'
+  lastClick: null, // diagnostics: last on-screen control hit {id, phase} (round-6 click probe)
   musicActive: false,
   toastT: 0,
   muted: save.settings.muted,
@@ -669,18 +670,34 @@ function bindTouchButton(id, down) {
   let lastFire = 0;
   const fire = (e) => {
     const now = performance.now();
-    if (now - lastFire < 300) return; // pointerdown + click would double-queue
+    if (now - lastFire < 300) return; // multi-event delivery would double-queue
     lastFire = now;
+    state.lastClick = { id, phase: state.phase };
     e.preventDefault();
     ensureAudio();
     down();
   };
+  // Every plausible delivery path (round-6 hardening: the live
+  // browser's ◀ clicks never fired pointerdown/click, while ▶ did;
+  // the dedupe above keeps one physical press = one turn).
   el.addEventListener('pointerdown', fire);
+  el.addEventListener('mousedown', fire);
+  el.addEventListener('touchstart', fire, { passive: false });
   el.addEventListener('click', fire);
 }
 bindTouchButton('btn-turn-left', () => queueTurn(-1));
 bindTouchButton('btn-turn-right', () => queueTurn(1));
 bindTouchButton('btn-boost', () => queueBoostToggle());
+// Half-screen tap zones (original design): during play, pressing the
+// left half of the arena turns left, the right half turns right.
+// HUD buttons and overlays are siblings above the canvas, so their
+// clicks never reach this handler.
+$('game-container').addEventListener('pointerdown', (e) => {
+  if (state.phase !== 'playing' && state.phase !== 'paused') return;
+  state.lastClick = { id: e.clientX < window.innerWidth / 2 ? 'zone-left' : 'zone-right', phase: state.phase };
+  ensureAudio();
+  queueTurn(e.clientX < window.innerWidth / 2 ? -1 : 1);
+});
 
 // ---------------------------------------------------------------- screens
 function showOnly(id) {
@@ -1146,9 +1163,11 @@ function frame(now) {
   // Settings performance readout (+ input diagnostics, round 4).
   if (!$('settings').classList.contains('hidden')) {
     const lk = state.lastKey;
-    const inputLine = lk
+    const lc = state.lastClick;
+    const inputLine = (lk
       ? ` · Input: last key ${lk.code || lk.key || '?'}${lk.repeat ? ' (repeat)' : ''} · turn ${state.lastTurnOutcome || '—'} · queued ${turnPending.length}`
-      : ' · Input: no key seen yet';
+      : ' · Input: no key seen yet')
+      + (lc ? ` · click ${lc.id}` : ' · click none');
     $('perf-line').textContent = `Performance: ${Math.round(fpsEma)} fps · render scale ${renderer.getPixelRatio().toFixed(1)}×${inputLine}`;
   }
 
@@ -1259,6 +1278,7 @@ function info() {
     rivalsTotal: run ? run.rivals.length : 0,
     turns: state.turnCount,
     lastKey: state.lastKey,
+    lastClick: state.lastClick,
     lastTurnOutcome: state.lastTurnOutcome,
     turnQueued: turnPending.length,
     touchVisible: !$('touch-controls').classList.contains('hidden'),
