@@ -42,6 +42,7 @@ const state = {
   hitStopT: 0,
   slowMoT: 0,
   timeScale: 1,
+  readyT: 0, // seconds left in the start-of-run ready beat (rider holds still)
   fovPunch: 0,
   fovDip: 0,
   turnCount: 0,
@@ -601,22 +602,27 @@ function hideToast() {
 }
 
 // ---------------------------------------------------------------- input
-// Turns and boost are EDGES: one key press queues one turn / flips
-// the boost switch once. The frame loop passes the pending edge to
-// the first sim step of the frame, then clears it — passing it to
-// every step would queue the same turn twice.
-let turnEdge = 0;
+// Turns are a true EVENT QUEUE: every keydown pushes one turn, and
+// the frame loop hands them to the sim one per step. Boost is an
+// edge: one Space press flips the switch once (consumed by the
+// first sim step of the frame — passing it to every step would
+// toggle it repeatedly).
+// Turns/boost may be queued while PAUSED and during the ready beat:
+// the frame loop only consumes them while the sim steps, so a press
+// survives until the first sim step after resume / after the beat.
+// (Live playtest NO-GO fixes 2026-11-25, two rounds: round 1 —
+// queueTurn silently dropped presses while paused; round 2 — the
+// tester still reported single taps not turning in the live
+// browser-task environment while headless probes passed. The old
+// single `turnEdge` scalar could lose a press to a second press in
+// the same frame, and the blur handler could clear a press before
+// the next frame consumed it. The queue + no blur-clear removes
+// every game-side silent-drop path.)
+const turnPending = [];
 let boostEdge = false;
-// Turns/boost may be queued while PAUSED: the frame loop only
-// consumes edges while playing, so a press during pause survives
-// until the first sim step after resume. (Live playtest NO-GO fix
-// 2026-11-25: queueTurn silently dropped presses while paused —
-// the tester paused to plan, pressed a turn, resumed, and rode
-// straight into the wall. Single presses while playing always
-// worked; the pause was the hole.)
 function queueTurn(dir) {
   if (state.phase !== 'playing' && state.phase !== 'paused') return;
-  turnEdge = dir;
+  if (turnPending.length < 4) turnPending.push(dir);
 }
 function queueBoostToggle() {
   if (state.phase !== 'playing' && state.phase !== 'paused') return;
@@ -638,10 +644,6 @@ window.addEventListener('keydown', (e) => {
     case 'Enter': confirmFocused(); break;
     default: break;
   }
-});
-window.addEventListener('blur', () => {
-  turnEdge = 0;
-  boostEdge = false;
 });
 function bindTouchButton(id, down) {
   const el = $(id);
@@ -781,9 +783,9 @@ function startArena(id, unlockedOverride = false) {
   state.turnCount = 0;
   state.lastTrapAnnounced = null;
   state.lastDenied = null;
-  turnEdge = 0;
+  turnPending.length = 0;
   boostEdge = false;
-  screenStack.length = 0;
+  state.readyT = 1.2; // ready beat: rider holds still, hint toast up, input queues
   showOnly(null);
   $('hud').classList.remove('hidden');
   if (isTouch()) $('touch-controls').classList.remove('hidden');
@@ -851,7 +853,7 @@ function endRun(won) {
 }
 function quitToMenu() {
   if (state.endTimer) { clearTimeout(state.endTimer); state.endTimer = null; }
-  turnEdge = 0;
+  turnPending.length = 0;
   boostEdge = false;
   showMenu();
 }
@@ -958,7 +960,8 @@ let simAcc = 0;
 let elapsed = 0;
 function frame(now) {
   requestAnimationFrame(frame);
-  const rawDt = Math.min(0.05, (now - lastT) / 1000);
+  const wallDt = (now - lastT) / 1000; // uncapped wall time (the ready beat runs on this)
+  const rawDt = Math.min(0.05, wallDt);
   lastT = now;
   elapsed += rawDt;
 
@@ -987,7 +990,15 @@ function frame(now) {
   const activeRun = state.phase === 'menu' ? state.demoRun : state.run;
   const dt = rawDt * state.timeScale;
 
-  if (activeRun && (state.phase === 'playing' || state.phase === 'menu')) {
+  // Ready beat: for the first 1.2s of a run the rider holds still
+  // (hint toast up) so the player can read the arena and queue the
+  // first turn before moving — the opening teaches, it doesn't
+  // punish (live playtests 2026-11-25: a no-input crash ~2.9s in
+  // left no fair window for a first turn). Input queues during the
+  // beat; the sim steps only after it. The beat freezes with pause.
+  if (state.phase === 'playing' && state.readyT > 0) {
+    state.readyT = Math.max(0, state.readyT - wallDt);
+  } else if (activeRun && (state.phase === 'playing' || state.phase === 'menu')) {
     simAcc += dt;
     let guard = 0;
     while (simAcc >= DT && guard < 5) {
@@ -995,9 +1006,9 @@ function frame(now) {
       guard++;
       const inp = state.phase === 'menu'
         ? decisionPolicy(activeRun)
-        : state.autopilot ? decisionPolicy(activeRun) : { turn: turnEdge, toggleBoost: boostEdge };
-      // Edges are consumed by the first step of the frame.
-      turnEdge = 0;
+        : state.autopilot ? decisionPolicy(activeRun) : { turn: turnPending.length ? turnPending.shift() : 0, toggleBoost: boostEdge };
+      // One queued turn per sim step; the boost edge is consumed by
+      // the first step of the frame.
       boostEdge = false;
       const before = {
         dir: activeRun.player.alive ? { ...activeRun.player.dir } : null,
@@ -1223,6 +1234,7 @@ function info() {
     time: run ? +run.time.toFixed(2) : 0,
     trauma: +state.trauma.toFixed(3),
     timeScale: state.timeScale,
+    readyT: +state.readyT.toFixed(2),
     fov: +camera.fov.toFixed(1),
     autopilot: state.autopilot,
     unlocked: save.unlocked,
